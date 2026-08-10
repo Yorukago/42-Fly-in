@@ -1,0 +1,23 @@
+[project]
+name = "fly-in"
+version = "0.1.0"
+description = "Drone fleet routing across a network of zones."
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.13.4",
+    "pygame-ce>=2.5",
+]
+
+[dependency-groups]
+dev = [
+    "flake8>=7",
+    "flake8-pyproject>=1.2",
+    "mypy>=1.10",
+]
+
+[tool.flake8]
+max-line-length = 100
+exclude = [".venv", "__pycache__", ".mypy_cache", "maps"]
+
+[tool.uv]
+package = false
