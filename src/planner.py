@@ -6,7 +6,6 @@ from graph import Graph
 from reservation import ReservationTable
 from zone import ZoneType
 
-# A heap entry: (turn, -priority_count, tie_break_seq, zone_name)
 _HeapEntry = tuple[int, int, int, str]
 _State = tuple[str, int]
 _Predecessor = tuple[str, int, "frozenset[str] | None"]
@@ -155,8 +154,13 @@ class DronePlanner:
             if conn_key is None:
                 events.append(DroneEvent(turn, EventKind.WAIT, zone))
             elif turn - prev_turn == 2:
-                events.append(DroneEvent(turn - 1, EventKind.TRANSIT, zone, conn_key))
+                # Events are collected walking backward from the end state,
+                # then reversed once as a whole at the end — so within a
+                # single two-turn hop the events must also be appended in
+                # reverse-chronological order (ARRIVE before TRANSIT) for
+                # the final list to come out in turn order.
                 events.append(DroneEvent(turn, EventKind.ARRIVE, zone, conn_key))
+                events.append(DroneEvent(turn - 1, EventKind.TRANSIT, zone, conn_key))
             else:
                 events.append(DroneEvent(turn, EventKind.ARRIVE, zone, conn_key))
 

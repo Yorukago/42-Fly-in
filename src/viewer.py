@@ -11,6 +11,8 @@ from theme import Theme, load_theme
 from zone import Zone, ZoneType
 
 WINDOW_SIZE = (900, 700)
+WINDOW_SCREEN_FRACTION = 0.85
+MIN_WINDOW_SIZE = WINDOW_SIZE
 MARGIN = 60
 ZONE_RADIUS = 22
 BACKGROUND = (24, 26, 32)
@@ -59,24 +61,43 @@ class MapLayout:
         self._compute_positions()
 
     def _compute_positions(self) -> None:
-        """Map each zone's (x, y) map coordinates to screen pixels."""
+        """Map each zone's (x, y) map coordinates to screen pixels.
+
+        A single scale factor is used for both axes (picking whichever is
+        more constrained) so the map keeps its true proportions instead of
+        being stretched independently to fill the window. The scaled
+        content is then centered in the drawable area, rather than
+        anchored to the top-left corner — otherwise a map with little or
+        no vertical spread (e.g. a straight line) collapses to y=0 and
+        ends up pinned to the top regardless of window size.
+        """
         xs = [zone.x for zone in self.data.zones.values()]
         ys = [zone.y for zone in self.data.zones.values()]
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
 
-        span_x = max(max_x - min_x, 1)
-        span_y = max(max_y - min_y, 1)
+        span_x = max_x - min_x
+        span_y = max_y - min_y
 
         draw_w = max(self.window_size[0] - 2 * MARGIN, 1)
         draw_h = max(self.window_size[1] - 2 * MARGIN, 1)
 
+        candidate_scales = []
+        if span_x > 0:
+            candidate_scales.append(draw_w / span_x)
+        if span_y > 0:
+            candidate_scales.append(draw_h / span_y)
+        scale = min(candidate_scales) if candidate_scales else 1.0
+
+        content_w = span_x * scale
+        content_h = span_y * scale
+        offset_x = MARGIN + (draw_w - content_w) / 2
+        offset_y = MARGIN + (draw_h - content_h) / 2
+
         for zone in self.data.zones.values():
-            norm_x = (zone.x - min_x) / span_x
-            norm_y = (zone.y - min_y) / span_y
-            px = MARGIN + int(norm_x * draw_w)
-            py = MARGIN + int(norm_y * draw_h)
-            self.positions[zone.name] = (px, py)
+            px = offset_x + (zone.x - min_x) * scale
+            py = offset_y + (zone.y - min_y) * scale
+            self.positions[zone.name] = (int(px), int(py))
 
 
 def zone_fill_color(zone: Zone) -> tuple[int, int, int]:
@@ -200,8 +221,6 @@ def draw_drones(
         turn: The simulation turn currently being displayed.
         theme: Optional custom artwork; falls back to a plain circle.
     """
-    # group drones sharing (nearly) the same spot so they can be spread out
-    # a little instead of drawing exactly on top of one another
     grouped: dict[tuple[int, int], list[Drone]] = defaultdict(list)
     for drone in drones:
         clamped_turn = min(turn, drone.plan.arrival_turn)
@@ -257,6 +276,28 @@ def draw_hud(
         screen.blit(label, (10, 10 + i * 16))
 
 
+def _initial_window_size() -> tuple[int, int]:
+    """Pick a startup window size that fills most of the current screen.
+
+    Big maps get cramped in a small, fixed-size window. Sizing off the
+    actual desktop resolution (pygame must already be initialized) gives
+    the visualizer room to breathe on any monitor, while still falling
+    back to WINDOW_SIZE if that resolution can't be determined.
+    """
+    try:
+        info = pygame.display.Info()
+        screen_w, screen_h = info.current_w, info.current_h
+    except pygame.error:
+        return WINDOW_SIZE
+
+    if screen_w <= 0 or screen_h <= 0:
+        return WINDOW_SIZE
+
+    width = max(int(screen_w * WINDOW_SCREEN_FRACTION), MIN_WINDOW_SIZE[0])
+    height = max(int(screen_h * WINDOW_SCREEN_FRACTION), MIN_WINDOW_SIZE[1])
+    return (width, height)
+
+
 def run(filepath: str) -> None:
     """Load a map file, simulate it, and play back the drone routes.
 
@@ -283,11 +324,12 @@ def run(filepath: str) -> None:
         }
         return new_layout, new_tracks
 
-    layout, tracks = build_layout(WINDOW_SIZE)
     total_turns = simulation.total_turns
 
     pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)
+    initial_size = _initial_window_size()
+    layout, tracks = build_layout(initial_size)
+    screen = pygame.display.set_mode(initial_size, pygame.RESIZABLE)
     pygame.display.set_caption(f"Fly-in map viewer — {filepath}")
     font = pygame.font.SysFont("monospace", 14)
     clock = pygame.time.Clock()
@@ -304,11 +346,6 @@ def run(filepath: str) -> None:
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.VIDEORESIZE:
-                # Re-fetch the already-resized surface instead of calling
-                # set_mode() again — re-creating the window here is what
-                # causes tiling window managers (e.g. Hyprland) to treat it
-                # as a brand new window, re-tile it, fire another resize
-                # event, and spiral into an endless loop of new windows.
                 resized_surface = pygame.display.get_surface()
                 if resized_surface is not None:
                     screen = resized_surface

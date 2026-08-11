@@ -4,7 +4,7 @@ from connection import Connection
 from drone import DronePlan, EventKind
 from zone import Zone
 
-UNCAPACITATED = 10 ** 9  # sentinel capacity for the start/end zones
+UNCAPACITATED = 10 ** 9
 
 
 class ReservationTable:

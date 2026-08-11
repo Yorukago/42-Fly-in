@@ -176,7 +176,6 @@ def parse_map(filepath: str) -> MapData:
         if not line or line.startswith("#"):
             continue
 
-        # ---- nb_drones ------------------------------------------------
         if line.startswith("nb_drones:"):
             value = line[len("nb_drones:"):].strip()
             try:
@@ -188,7 +187,6 @@ def parse_map(filepath: str) -> MapData:
                 ) from e
             continue
 
-        # ---- start_hub ------------------------------------------------
         if line.startswith("start_hub:"):
             if data.start_zone is not None:
                 raise ValueError(
@@ -200,7 +198,6 @@ def parse_map(filepath: str) -> MapData:
             data.start_zone = zone
             continue
 
-        # ---- end_hub --------------------------------------------------
         if line.startswith("end_hub:"):
             if data.end_zone is not None:
                 raise ValueError(
@@ -212,14 +209,12 @@ def parse_map(filepath: str) -> MapData:
             data.end_zone = zone
             continue
 
-        # ---- hub ------------------------------------------------------
         if line.startswith("hub:"):
             content = line[len("hub:"):].strip()
             zone = _parse_zone_line(content, line_number)
             _register_zone(data, zone, line_number)
             continue
 
-        # ---- connection -----------------------------------------------
         if line.startswith("connection:"):
             content = line[len("connection:"):].strip()
             conn = _parse_connection_line(content, line_number, data.zones)
@@ -235,7 +230,6 @@ def parse_map(filepath: str) -> MapData:
             data.connections.append(conn)
             continue
 
-        # ---- unknown line ---------------------------------------------
         raise ValueError(
             f"Line {line_number}: unrecognised line format: {line!r}"
         )
