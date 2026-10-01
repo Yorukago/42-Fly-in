@@ -1,0 +1,12 @@
+# Not a syntax error: this file parses cleanly, but the goal sits in its own
+# component with no route from the start. Handled gracefully as "unsolvable"
+# rather than hanging or crashing.
+nb_drones: 1
+
+start_hub: start 0 0
+hub: island_a 1 0
+hub: island_b 3 0
+end_hub: goal 4 0
+
+connection: start-island_a
+connection: island_b-goal

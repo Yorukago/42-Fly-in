@@ -1,140 +1,51 @@
 from collections import defaultdict
 
-from connection import Connection
-from drone import DronePlan, EventKind
-from zone import Zone
+from drone import DroneEvent, EventKind
+from mapfile import Connection, Zone
 
-UNCAPACITATED = 10 ** 9
+Slot = str | frozenset[str]
 
 
 class ReservationTable:
-    """Tracks per-turn zone and connection occupancy across all planned drones.
+    """Per-turn occupancy of every zone and connection.
 
-    The table is only ever read while a single drone's path is being
-    searched, and only ever mutated via commit_plan() once that drone's
-    path has been finalized. Planning drones strictly one at a time against
-    this table is what guarantees zero capacity conflicts between drones.
+    A slot is a zone name or a connection key. The table is read while a
+    drone's path is being searched and mutated only by commit(), once that
+    path is final: planning drones strictly one at a time against it is what
+    guarantees no two drones ever exceed a capacity.
     """
 
-    def __init__(self, zones: dict[str, Zone], connections: list[Connection]) -> None:
-        """Initialize capacities from the map and start with empty occupancy.
+    def __init__(
+        self, zones: dict[str, Zone], connections: list[Connection], nb_drones: int
+    ) -> None:
+        """Take capacities from the map and start with everything empty.
 
-        Args:
-            zones: All zones in the map, keyed by name.
-            connections: All connections in the map.
+        The two hubs hold `nb_drones`: every drone starts in one and is
+        delivered to the other, so the fleet size *is* their capacity.
         """
-        self._zone_capacity: dict[str, int] = {
-            name: UNCAPACITATED if (zone.is_start or zone.is_end) else zone.max_drones
+        self._capacity: dict[Slot, int] = {
+            name: nb_drones if zone.is_hub else zone.max_drones
             for name, zone in zones.items()
         }
-        self._connection_capacity: dict[frozenset[str], int] = {
-            frozenset((conn.zone_a, conn.zone_b)): conn.max_link_capacity
-            for conn in connections
-        }
-        self._zone_occupancy: dict[tuple[str, int], int] = defaultdict(int)
-        self._connection_occupancy: dict[tuple[frozenset[str], int], int] = defaultdict(int)
+        self._capacity.update({conn.key: conn.max_link_capacity for conn in connections})
+        self._used: dict[tuple[Slot, int], int] = defaultdict(int)
 
-    def zone_capacity(self, zone_name: str) -> int:
-        """Return the maximum number of drones a zone may hold at once.
+    def capacity(self, slot: Slot) -> int:
+        """Return how many drones a slot may hold at once."""
+        return self._capacity[slot]
 
-        Args:
-            zone_name: The zone to look up.
+    def used(self, slot: Slot, turn: int) -> int:
+        """Return how many drones occupy a slot on this turn."""
+        return self._used[(slot, turn)]
 
-        Returns:
-            The zone's capacity (UNCAPACITATED for start/end zones).
-        """
-        return self._zone_capacity[zone_name]
+    def has_room(self, slot: Slot, turn: int) -> bool:
+        """Return whether one more drone could use a slot on this turn."""
+        return self._used[(slot, turn)] < self._capacity[slot]
 
-    def connection_capacity(self, conn_key: frozenset[str]) -> int:
-        """Return the maximum number of drones a connection may carry at once.
-
-        Args:
-            conn_key: The connection's order-independent identity key.
-
-        Returns:
-            The connection's capacity.
-        """
-        return self._connection_capacity[conn_key]
-
-    def has_zone_room(self, zone_name: str, turn: int) -> bool:
-        """Check whether a zone has free capacity at a given turn.
-
-        Args:
-            zone_name: The zone to check.
-            turn: The turn to check.
-
-        Returns:
-            True if at least one more drone could occupy the zone at turn.
-        """
-        return self._zone_occupancy[(zone_name, turn)] < self._zone_capacity[zone_name]
-
-    def has_connection_room(self, conn_key: frozenset[str], turn: int) -> bool:
-        """Check whether a connection has free capacity at a given turn.
-
-        Args:
-            conn_key: The connection's order-independent identity key.
-            turn: The turn to check.
-
-        Returns:
-            True if at least one more drone could traverse the connection at turn.
-        """
-        return (
-            self._connection_occupancy[(conn_key, turn)] < self._connection_capacity[conn_key]
-        )
-
-    def zone_occupancy(self, zone_name: str, turn: int) -> int:
-        """Return how many drones occupy a zone at a given turn.
-
-        Args:
-            zone_name: The zone to check.
-            turn: The turn to check.
-
-        Returns:
-            The number of drones occupying the zone at that turn.
-        """
-        return self._zone_occupancy[(zone_name, turn)]
-
-    def connection_occupancy(self, conn_key: frozenset[str], turn: int) -> int:
-        """Return how many drones traverse a connection at a given turn.
-
-        Args:
-            conn_key: The connection's order-independent identity key.
-            turn: The turn to check.
-
-        Returns:
-            The number of drones traversing the connection at that turn.
-        """
-        return self._connection_occupancy[(conn_key, turn)]
-
-    def reserve_zone(self, zone_name: str, turn: int) -> None:
-        """Record that one drone occupies a zone at a given turn.
-
-        Args:
-            zone_name: The zone being occupied.
-            turn: The turn of occupancy.
-        """
-        self._zone_occupancy[(zone_name, turn)] += 1
-
-    def reserve_connection(self, conn_key: frozenset[str], turn: int) -> None:
-        """Record that one drone traverses a connection at a given turn.
-
-        Args:
-            conn_key: The connection's order-independent identity key.
-            turn: The turn of traversal.
-        """
-        self._connection_occupancy[(conn_key, turn)] += 1
-
-    def commit_plan(self, plan: DronePlan) -> None:
-        """Reserve every zone/connection occupancy implied by a finalized plan.
-
-        Args:
-            plan: The drone's finalized plan.
-        """
-        for event in plan.events:
-            if event.kind is EventKind.WAIT:
-                self.reserve_zone(event.zone, event.turn)
-                continue
+    def commit(self, events: list[DroneEvent]) -> None:
+        """Reserve every occupancy implied by one drone's finished route."""
+        for event in events:
             if event.connection_key is not None:
-                self.reserve_connection(event.connection_key, event.turn)
-            if event.kind is EventKind.ARRIVE:
-                self.reserve_zone(event.zone, event.turn)
+                self._used[(event.connection_key, event.turn)] += 1
+            if event.kind is not EventKind.TRANSIT:
+                self._used[(event.zone, event.turn)] += 1

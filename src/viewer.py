@@ -1,374 +1,306 @@
 import math
-import sys
-from collections import defaultdict
+from itertools import combinations
 
 import pygame
 
 from drone import Drone, EventKind
-from parser import MapData, parse_map
-from simulation import Simulation, SimulationError
-from theme import Theme, load_theme
-from zone import Zone, ZoneType
+from mapfile import MapData, Zone, ZoneType
+from simulation import Simulation
 
-WINDOW_SIZE = (900, 700)
-WINDOW_SCREEN_FRACTION = 0.85
-MIN_WINDOW_SIZE = WINDOW_SIZE
+WINDOW_SIZE = (1000, 720)
 MARGIN = 60
-ZONE_RADIUS = 22
-BACKGROUND = (24, 26, 32)
-LINE_COLOR = (120, 124, 138)
-TEXT_COLOR = (235, 235, 240)
+SECONDS_PER_TURN = 0.6
+MAX_ZONE_RADIUS = 20
+MIN_ZONE_RADIUS = 5
 
-DRONE_RADIUS = 8
-DRONE_COLOR = (250, 210, 40)
-DRONE_LABEL_COLOR = (30, 30, 20)
-TURN_DURATION = 0.8
+BACKGROUND = (17, 19, 26)
+LINE = (92, 98, 116)
+TEXT = (231, 234, 242)
+WHITE = (255, 255, 255)
+DRONE = (250, 210, 40)
+DELIVERED = (74, 222, 128)
 
-ZONE_TYPE_FILL = {
+ZONE_COLOR = {
     ZoneType.NORMAL: (90, 130, 200),
     ZoneType.BLOCKED: (70, 70, 70),
     ZoneType.RESTRICTED: (200, 90, 90),
     ZoneType.PRIORITY: (90, 190, 120),
 }
 
-NAMED_COLORS = {
-    "red": (200, 60, 60),
-    "green": (60, 190, 90),
-    "blue": (70, 120, 220),
-    "yellow": (225, 195, 60),
-    "gray": (130, 130, 130),
-    "grey": (130, 130, 130),
-    "orange": (230, 140, 50),
-    "purple": (160, 90, 200),
-    "black": (20, 20, 20),
-    "white": (235, 235, 235),
-}
+Point = tuple[float, float]
 
 
-class MapLayout:
-    """Computes screen positions for zones, scaled to fit the window."""
+def zone_color(zone: Zone) -> tuple[int, int, int]:
+    """Pick a zone's fill colour: its `color=` metadata, else its type's colour.
 
-    def __init__(self, data: MapData, window_size: tuple[int, int]) -> None:
-        """Build a layout from parsed map data.
+    A map may name any colour pygame knows (`red`, `darkred`, `cyan`...). An
+    unknown name falls back to the type's colour rather than being an error,
+    so a typo in a map still draws.
+    """
+    if zone.color != "none":
+        try:
+            named = pygame.Color(zone.color)
+        except ValueError:
+            return ZONE_COLOR[zone.zone_type]
+        return (named.r, named.g, named.b)
+    return ZONE_COLOR[zone.zone_type]
 
-        Args:
-            data: The parsed MapData whose zones will be positioned.
-            window_size: The current (width, height) of the window to fit.
-        """
+
+class MapView:
+    """Screen positions for a map's zones, scaled to fit a window."""
+
+    def __init__(self, data: MapData, size: tuple[int, int]) -> None:
+        """Fit a map into a window of the given size."""
         self.data = data
-        self.window_size = window_size
-        self.positions: dict[str, tuple[int, int]] = {}
-        self._compute_positions()
+        self.positions = self._fit(size)
+        self.radius = self._radius()
 
-    def _compute_positions(self) -> None:
-        """Map each zone's (x, y) map coordinates to screen pixels.
+    def _fit(self, size: tuple[int, int]) -> dict[str, tuple[int, int]]:
+        """Scale zone coordinates into centred screen pixels.
 
-        A single scale factor is used for both axes (picking whichever is
-        more constrained) so the map keeps its true proportions instead of
-        being stretched independently to fill the window. The scaled
-        content is then centered in the drawable area, rather than
-        anchored to the top-left corner — otherwise a map with little or
-        no vertical spread (e.g. a straight line) collapses to y=0 and
-        ends up pinned to the top regardless of window size.
+        One scale factor serves both axes, so the map keeps its proportions
+        instead of being stretched, and the result is centred rather than
+        pinned to the top-left - otherwise a map with no vertical spread
+        collapses onto y=0.
         """
-        xs = [zone.x for zone in self.data.zones.values()]
-        ys = [zone.y for zone in self.data.zones.values()]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
+        zones = self.data.zones.values()
+        min_x, max_x = min(z.x for z in zones), max(z.x for z in zones)
+        min_y, max_y = min(z.y for z in zones), max(z.y for z in zones)
+        span_x, span_y = max_x - min_x, max_y - min_y
 
-        span_x = max_x - min_x
-        span_y = max_y - min_y
+        width = max(size[0] - 2 * MARGIN, 1)
+        height = max(size[1] - 2 * MARGIN, 1)
+        scales = [width / span_x] if span_x else []
+        if span_y:
+            scales.append(height / span_y)
+        scale = min(scales) if scales else 1.0
 
-        draw_w = max(self.window_size[0] - 2 * MARGIN, 1)
-        draw_h = max(self.window_size[1] - 2 * MARGIN, 1)
+        left = MARGIN + (width - span_x * scale) / 2
+        top = MARGIN + (height - span_y * scale) / 2
+        return {
+            zone.name: (
+                int(left + (zone.x - min_x) * scale),
+                int(top + (zone.y - min_y) * scale),
+            )
+            for zone in zones
+        }
 
-        candidate_scales = []
-        if span_x > 0:
-            candidate_scales.append(draw_w / span_x)
-        if span_y > 0:
-            candidate_scales.append(draw_h / span_y)
-        scale = min(candidate_scales) if candidate_scales else 1.0
+    def _radius(self) -> int:
+        """Size zones from the closest pair, so dense maps draw smaller circles."""
+        gaps = (math.dist(a, b) for a, b in combinations(self.positions.values(), 2))
+        closest = min((gap for gap in gaps if gap > 0), default=float("inf"))
+        if closest == float("inf"):
+            return MAX_ZONE_RADIUS
+        return max(MIN_ZONE_RADIUS, min(MAX_ZONE_RADIUS, int(closest * 0.4)))
 
-        content_w = span_x * scale
-        content_h = span_y * scale
-        offset_x = MARGIN + (draw_w - content_w) / 2
-        offset_y = MARGIN + (draw_h - content_h) / 2
+
+class Viewer:
+    """Plays a planned simulation back in a pygame window."""
+
+    def __init__(
+        self, screen: pygame.Surface, data: MapData, simulation: Simulation
+    ) -> None:
+        """Set up playback of an already-planned simulation.
+
+        The picker and the viewer share one window for the whole session -
+        see `open_window()`.
+        """
+        assert data.start_zone is not None  # guaranteed by a valid Simulation
+        self.data = data
+        self.drones = simulation.drones
+        self.total_turns = simulation.total_turns
+        self.start_name = data.start_zone.name
+
+        self.screen = screen
+        self.font = pygame.font.SysFont("monospace", 13)
+        self.view = MapView(data, self.screen.get_size())
+        self.tracks = {d.drone_id: self._track(d) for d in self.drones}
+        self.arrival = {d.drone_id: d.arrival_turn for d in self.drones}
+
+        self.time = 0.0
+        self.paused = False
+        self.running = True
+        self.outcome = "quit"
+
+    def _track(self, drone: Drone) -> dict[int, Point]:
+        """Map each turn of one drone's route to a screen position.
+
+        A drone in flight toward a restricted zone (a TRANSIT event) sits at
+        the midpoint of the connection, so it reads as being in transit.
+        """
+        positions = self.view.positions
+        track: dict[int, Point] = {0: positions[self.start_name]}
+        current = self.start_name
+
+        for event in drone.events:
+            if event.kind is EventKind.TRANSIT:
+                start, end = positions[current], positions[event.zone]
+                track[event.turn] = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+            else:
+                track[event.turn] = positions[event.zone]
+                current = event.zone
+
+        return track
+
+    def _at_turn(self, drone_id: int, turn: int) -> Point:
+        """Return a drone's position on a whole turn, fanned out if crowded.
+
+        Drones sharing a zone are spread in rings around it, or 25 of them
+        sitting on the start hub would draw as one dot.
+        """
+        def spot_of(other: int) -> Point:
+            return self.tracks[other][max(0, min(turn, self.arrival[other]))]
+
+        spot = spot_of(drone_id)
+        sharing = sorted(other for other in self.tracks if spot_of(other) == spot)
+        if len(sharing) == 1:
+            return spot
+
+        index = sharing.index(drone_id)
+        ring = index // 6
+        slots = min(6, len(sharing) - ring * 6)
+        angle = 2 * math.pi * (index % 6) / slots
+        distance = self.view.radius * 0.9 * (ring + 1)
+        return (spot[0] + distance * math.cos(angle), spot[1] + distance * math.sin(angle))
+
+    def _position(self, drone_id: int) -> Point:
+        """Return a drone's position right now, interpolated between two turns."""
+        clock = max(0.0, min(self.time, float(self.arrival[drone_id])))
+        turn = int(clock)
+        progress = clock - turn
+        start = self._at_turn(drone_id, turn)
+        end = self._at_turn(drone_id, turn + 1)
+        return (
+            start[0] + (end[0] - start[0]) * progress,
+            start[1] + (end[1] - start[1]) * progress,
+        )
+
+    @property
+    def turn(self) -> int:
+        """Return the whole turn currently on screen."""
+        return min(int(self.time), self.total_turns)
+
+    @property
+    def delivered(self) -> int:
+        """Return how many drones have reached the end hub by now."""
+        return sum(1 for d in self.drones if self.arrival[d.drone_id] <= self.time)
+
+    def draw(self) -> None:
+        """Draw one full frame: connections, zones, drones, status line."""
+        self.screen.fill(BACKGROUND)
+
+        for conn in self.data.connections:
+            start = self.view.positions[conn.zone_a]
+            end = self.view.positions[conn.zone_b]
+            pygame.draw.line(self.screen, LINE, start, end, 2)
 
         for zone in self.data.zones.values():
-            px = offset_x + (zone.x - min_x) * scale
-            py = offset_y + (zone.y - min_y) * scale
-            self.positions[zone.name] = (int(px), int(py))
+            self._draw_zone(zone)
 
+        for drone in self.drones:
+            self._draw_drone(drone.drone_id)
 
-def zone_fill_color(zone: Zone) -> tuple[int, int, int]:
-    """Pick an RGB fill color for a zone from its metadata or type.
+        status = (
+            f"turn {self.turn}/{self.total_turns}  ·  "
+            f"delivered {self.delivered}/{len(self.drones)}"
+            f"{'  ·  paused' if self.paused else ''}"
+        )
+        self.screen.blit(self.font.render(status, True, TEXT), (12, 12))
+        hints = "[space] pause  [<- ->] step  [r] restart  [m] maps  [esc] quit"
+        self.screen.blit(self.font.render(hints, True, LINE), (12, 32))
 
-    Args:
-        zone: The zone to color.
+    def _draw_zone(self, zone: Zone) -> None:
+        """Draw one zone: a circle, a type marker, and a name if it is a hub."""
+        pos = self.view.positions[zone.name]
+        radius = self.view.radius
+        pygame.draw.circle(self.screen, zone_color(zone), pos, radius)
 
-    Returns:
-        An (r, g, b) tuple.
-    """
-    if zone.color != "none" and zone.color in NAMED_COLORS:
-        return NAMED_COLORS[zone.color]
-    return ZONE_TYPE_FILL[zone.zone_type]
-
-
-def draw_map(
-    screen: pygame.Surface,
-    font: pygame.font.Font,
-    data: MapData,
-    layout: MapLayout,
-    theme: Theme,
-) -> None:
-    """Draw all connections and zones of the map onto the screen.
-
-    Args:
-        screen: The pygame surface to draw on.
-        font: Font used for zone labels.
-        data: The parsed map data.
-        layout: Precomputed screen positions for each zone.
-        theme: Optional custom artwork; falls back to plain shapes.
-    """
-    if theme.background is not None:
-        background = pygame.transform.smoothscale(theme.background, screen.get_size())
-        screen.blit(background, (0, 0))
-    else:
-        screen.fill(BACKGROUND)
-
-    for conn in data.connections:
-        start = layout.positions[conn.zone_a]
-        end = layout.positions[conn.zone_b]
-        pygame.draw.line(screen, LINE_COLOR, start, end, 2)
-
-        if conn.max_link_capacity > 1:
-            mid = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
-            cap_label = font.render(f"x{conn.max_link_capacity}", True, (200, 200, 90))
-            screen.blit(cap_label, cap_label.get_rect(center=mid))
-
-    for zone in data.zones.values():
-        pos = layout.positions[zone.name]
-        image = theme.zone_images.get(zone.zone_type)
-        if image is not None:
-            screen.blit(image, image.get_rect(center=pos))
-        else:
-            fill = zone_fill_color(zone)
-            pygame.draw.circle(screen, fill, pos, ZONE_RADIUS)
-
-        if zone.is_start or zone.is_end:
-            ring_color = (255, 255, 255)
-            pygame.draw.circle(screen, ring_color, pos, ZONE_RADIUS + 4, 3)
-
-        if zone.max_drones > 1:
-            cap_label = font.render(str(zone.max_drones), True, (20, 20, 20))
-            screen.blit(cap_label, cap_label.get_rect(center=pos))
-
-        name_label = font.render(zone.name, True, TEXT_COLOR)
-        label_pos = (pos[0] - name_label.get_width() // 2, pos[1] + ZONE_RADIUS + 6)
-        screen.blit(name_label, label_pos)
-
-
-def _drone_track(
-    drone: Drone, layout: MapLayout, start_zone: str
-) -> dict[int, tuple[float, float]]:
-    """Precompute a drone's screen position for every turn of its plan.
-
-    A drone mid-flight on a 2-turn restricted move (a TRANSIT event) is
-    placed at the midpoint of the connection it's traversing, so the
-    animation shows it "in flight" rather than stuck in place.
-
-    Args:
-        drone: The drone whose plan to trace.
-        layout: Precomputed zone screen positions.
-        start_zone: The name of the map's start zone.
-
-    Returns:
-        A mapping of turn number (0..arrival_turn) to a screen position.
-    """
-    track: dict[int, tuple[float, float]] = {0: layout.positions[start_zone]}
-    current_zone = start_zone
-
-    for event in drone.plan.events:
-        if event.kind is EventKind.TRANSIT:
-            start_pos = layout.positions[current_zone]
-            end_pos = layout.positions[event.zone]
-            track[event.turn] = (
-                (start_pos[0] + end_pos[0]) / 2,
-                (start_pos[1] + end_pos[1]) / 2,
-            )
-        else:
-            track[event.turn] = layout.positions[event.zone]
-            current_zone = event.zone
-
-    return track
-
-
-def draw_drones(
-    screen: pygame.Surface,
-    font: pygame.font.Font,
-    drones: list[Drone],
-    tracks: dict[int, dict[int, tuple[float, float]]],
-    turn: int,
-    theme: Theme,
-) -> None:
-    """Draw every drone at its position for the given simulation turn.
-
-    Args:
-        screen: The pygame surface to draw on.
-        font: Font used for drone id labels.
-        drones: All drones in the simulation.
-        tracks: Each drone's precomputed per-turn screen position.
-        turn: The simulation turn currently being displayed.
-        theme: Optional custom artwork; falls back to a plain circle.
-    """
-    grouped: dict[tuple[int, int], list[Drone]] = defaultdict(list)
-    for drone in drones:
-        clamped_turn = min(turn, drone.plan.arrival_turn)
-        x, y = tracks[drone.drone_id][clamped_turn]
-        grouped[(int(x), int(y))].append(drone)
-
-    spread = DRONE_RADIUS * 1.4
-    for (x, y), group in grouped.items():
-        for i, drone in enumerate(group):
-            if len(group) == 1:
-                pos = (x, y)
-            else:
-                angle = 2 * math.pi * i / len(group)
-                pos = (
-                    x + int(spread * math.cos(angle)),
-                    y + int(spread * math.sin(angle)),
+        if zone.zone_type is ZoneType.BLOCKED:  # an X
+            arm = radius // 2
+            for step in (-1, 1):
+                pygame.draw.line(
+                    self.screen, WHITE,
+                    (pos[0] - arm, pos[1] - arm * step),
+                    (pos[0] + arm, pos[1] + arm * step), 2,
                 )
-            if theme.drone is not None:
-                screen.blit(theme.drone, theme.drone.get_rect(center=pos))
-            else:
-                pygame.draw.circle(screen, DRONE_COLOR, pos, DRONE_RADIUS)
-            label = font.render(str(drone.drone_id), True, DRONE_LABEL_COLOR)
-            screen.blit(label, label.get_rect(center=pos))
+        elif zone.zone_type is ZoneType.RESTRICTED:  # an inner ring
+            pygame.draw.circle(self.screen, WHITE, pos, max(2, radius - 4), 1)
+        elif zone.zone_type is ZoneType.PRIORITY:  # a centre dot
+            pygame.draw.circle(self.screen, WHITE, pos, max(2, radius // 4))
+
+        if zone.is_hub:
+            pygame.draw.circle(self.screen, WHITE, pos, radius + 4, 2)
+            tag = self.font.render(zone.name, True, WHITE)
+            self.screen.blit(tag, tag.get_rect(midbottom=(pos[0], pos[1] - radius - 6)))
+
+    def _draw_drone(self, drone_id: int) -> None:
+        """Draw one drone as a numbered dot, green once it has landed."""
+        x, y = self._position(drone_id)
+        landed = self.arrival[drone_id] <= self.time
+        center = (int(x), int(y))
+        radius = max(4, int(self.view.radius * 0.45))
+        pygame.draw.circle(self.screen, DELIVERED if landed else DRONE, center, radius)
+        label = self.font.render(str(drone_id), True, BACKGROUND)
+        self.screen.blit(label, label.get_rect(center=center))
+
+    def handle(self, event: pygame.event.Event) -> None:
+        """Apply one pygame event."""
+        if event.type == pygame.QUIT:
+            self.running = False
+        elif event.type == pygame.VIDEORESIZE:
+            surface = pygame.display.get_surface()
+            if surface is not None:
+                self.screen = surface
+                self.view = MapView(self.data, self.screen.get_size())
+                self.tracks = {d.drone_id: self._track(d) for d in self.drones}
+        elif event.type == pygame.KEYDOWN:
+            self._handle_key(event.key)
+
+    def _handle_key(self, key: int) -> None:
+        """Apply one keypress."""
+        if key in (pygame.K_ESCAPE, pygame.K_q):
+            self.running = False
+        elif key in (pygame.K_m, pygame.K_BACKSPACE):
+            self.outcome = "back"
+            self.running = False
+        elif key == pygame.K_SPACE:
+            if self.paused and self.time >= self.total_turns:
+                self.time = 0.0
+            self.paused = not self.paused
+        elif key == pygame.K_r:
+            self.time = 0.0
+            self.paused = False
+        elif key in (pygame.K_LEFT, pygame.K_RIGHT):
+            self.paused = True
+            step = 1 if key == pygame.K_RIGHT else -1
+            self.time = float(max(0, min(round(self.time) + step, self.total_turns)))
+
+    def advance(self, dt: float) -> None:
+        """Move the clock on by a frame's worth of real time."""
+        if self.paused or self.total_turns <= 0:
+            return
+        self.time = min(self.time + dt / SECONDS_PER_TURN, float(self.total_turns))
+
+    def run(self) -> str:
+        """Play the simulation until the user goes back ("back") or quits ("quit")."""
+        clock = pygame.time.Clock()
+        while self.running:
+            dt = clock.tick(60) / 1000
+            for event in pygame.event.get():
+                self.handle(event)
+            self.advance(dt)
+            self.draw()
+            pygame.display.flip()
+        return self.outcome
 
 
-def draw_hud(
-    screen: pygame.Surface,
-    font: pygame.font.Font,
-    turn: int,
-    total_turns: int,
-    drones: list[Drone],
-    paused: bool,
-) -> None:
-    """Draw the turn counter, delivery count, and control hints.
+def open_window() -> pygame.Surface:
+    """Create the one window the picker and the viewer share for the session.
 
-    Args:
-        screen: The pygame surface to draw on.
-        font: Font used for the HUD text.
-        turn: The simulation turn currently being displayed.
-        total_turns: The total number of turns in the simulation.
-        drones: All drones in the simulation.
-        paused: Whether playback is currently paused.
+    Calling `set_mode` again - to resize, to change flags, or from a resize
+    handler - makes SDL destroy the window and build a new one, which under a
+    tiling Wayland compositor shows as the window closing and reopening.
     """
-    delivered = sum(1 for drone in drones if drone.plan.arrival_turn <= turn)
-    status = "paused" if paused else "playing"
-    lines = [
-        f"turn {turn}/{total_turns} ({status})",
-        f"delivered {delivered}/{len(drones)}",
-        "[space] pause/resume   [r] restart   [esc] quit",
-    ]
-    for i, text in enumerate(lines):
-        label = font.render(text, True, TEXT_COLOR)
-        screen.blit(label, (10, 10 + i * 16))
-
-
-def _initial_window_size() -> tuple[int, int]:
-    """Pick a startup window size that fills most of the current screen.
-
-    Big maps get cramped in a small, fixed-size window. Sizing off the
-    actual desktop resolution (pygame must already be initialized) gives
-    the visualizer room to breathe on any monitor, while still falling
-    back to WINDOW_SIZE if that resolution can't be determined.
-    """
-    try:
-        info = pygame.display.Info()
-        screen_w, screen_h = info.current_w, info.current_h
-    except pygame.error:
-        return WINDOW_SIZE
-
-    if screen_w <= 0 or screen_h <= 0:
-        return WINDOW_SIZE
-
-    width = max(int(screen_w * WINDOW_SCREEN_FRACTION), MIN_WINDOW_SIZE[0])
-    height = max(int(screen_h * WINDOW_SCREEN_FRACTION), MIN_WINDOW_SIZE[1])
-    return (width, height)
-
-
-def run(filepath: str) -> None:
-    """Load a map file, simulate it, and play back the drone routes.
-
-    Args:
-        filepath: Path to the map .txt file to visualize.
-    """
-    try:
-        data = parse_map(filepath)
-        simulation = Simulation(data)
-    except (ValueError, FileNotFoundError, SimulationError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return
-
-    assert data.start_zone is not None  # guaranteed by a successful Simulation build
-
-    def build_layout(window_size: tuple[int, int]) -> tuple[
-        MapLayout, dict[int, dict[int, tuple[float, float]]]
-    ]:
-        assert data.start_zone is not None
-        new_layout = MapLayout(data, window_size)
-        new_tracks = {
-            drone.drone_id: _drone_track(drone, new_layout, data.start_zone.name)
-            for drone in simulation.drones
-        }
-        return new_layout, new_tracks
-
-    total_turns = simulation.total_turns
-
-    pygame.init()
-    initial_size = _initial_window_size()
-    layout, tracks = build_layout(initial_size)
-    screen = pygame.display.set_mode(initial_size, pygame.RESIZABLE)
-    pygame.display.set_caption(f"Fly-in map viewer — {filepath}")
-    font = pygame.font.SysFont("monospace", 14)
-    clock = pygame.time.Clock()
-    theme = load_theme(ZONE_RADIUS, DRONE_RADIUS)
-
-    current_turn = 0
-    elapsed = 0.0
-    paused = False
-
-    running = True
-    while running:
-        dt = clock.tick(30) / 1000
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.VIDEORESIZE:
-                resized_surface = pygame.display.get_surface()
-                if resized_surface is not None:
-                    screen = resized_surface
-                layout, tracks = build_layout(screen.get_size())
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key == pygame.K_SPACE:
-                    paused = not paused
-                elif event.key == pygame.K_r:
-                    current_turn = 0
-                    elapsed = 0.0
-                    paused = False
-
-        if not paused and current_turn < total_turns:
-            elapsed += dt
-            if elapsed >= TURN_DURATION:
-                elapsed = 0.0
-                current_turn += 1
-
-        draw_map(screen, font, data, layout, theme)
-        draw_drones(screen, font, simulation.drones, tracks, current_turn, theme)
-        draw_hud(screen, font, current_turn, total_turns, simulation.drones, paused)
-        pygame.display.flip()
-
-    pygame.quit()
+    if not pygame.get_init():
+        pygame.init()
+    return pygame.display.set_mode(WINDOW_SIZE, pygame.RESIZABLE)

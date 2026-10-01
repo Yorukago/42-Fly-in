@@ -1,0 +1,8 @@
+# Parser error: a metadata token must be key=value; "color" has no value.
+nb_drones: 1
+
+start_hub: start 0 0
+hub: relay 1 0 [color]
+end_hub: goal 2 0
+
+connection: start-goal

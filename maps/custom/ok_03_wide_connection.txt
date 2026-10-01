@@ -1,0 +1,10 @@
+# Connection capacity: both links take three at once and the plaza holds three,
+# so the whole fleet moves together instead of queueing.
+nb_drones: 3
+
+start_hub: start 0 0 [color=green]
+hub: plaza 1 0 [color=blue max_drones=3]
+end_hub: goal 2 0 [color=red]
+
+connection: start-plaza [max_link_capacity=3]
+connection: plaza-goal [max_link_capacity=3]

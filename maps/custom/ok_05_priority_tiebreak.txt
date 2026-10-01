@@ -1,0 +1,13 @@
+# Zone types: both routes are two turns long, but "express" is a priority zone,
+# so it is the one that gets taken.
+nb_drones: 1
+
+start_hub: start 0 0 [color=green]
+hub: plain 1 2 [color=blue]
+hub: express 1 -2 [zone=priority]
+end_hub: goal 2 0 [color=red]
+
+connection: start-plain
+connection: plain-goal
+connection: start-express
+connection: express-goal

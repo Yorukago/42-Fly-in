@@ -1,0 +1,7 @@
+# Parser error: "ghost" was never declared as a zone.
+nb_drones: 1
+
+start_hub: start 0 0
+end_hub: goal 1 0
+
+connection: start-ghost

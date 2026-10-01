@@ -1,0 +1,10 @@
+# Zone capacity: "narrow" holds one drone at a time, so the three queue at the
+# start hub and cross one per turn. Waiting drones print nothing.
+nb_drones: 3
+
+start_hub: start 0 0 [color=green]
+hub: narrow 1 0 [color=orange max_drones=1]
+end_hub: goal 2 0 [color=red]
+
+connection: start-narrow
+connection: narrow-goal

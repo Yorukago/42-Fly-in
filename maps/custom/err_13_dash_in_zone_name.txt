@@ -1,0 +1,8 @@
+# Parser error: zone names cannot contain a dash - it separates a connection.
+nb_drones: 1
+
+start_hub: start 0 0
+hub: relay-one 1 0
+end_hub: goal 2 0
+
+connection: start-goal

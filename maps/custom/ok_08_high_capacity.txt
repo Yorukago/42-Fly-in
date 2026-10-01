@@ -1,0 +1,10 @@
+# Edge case: very large capacity values. The hangar and both links can take far
+# more than the fleet, so all six drones move as one group.
+nb_drones: 6
+
+start_hub: start 0 0 [color=green]
+hub: hangar 1 0 [color=blue max_drones=1000]
+end_hub: goal 2 0 [color=red]
+
+connection: start-hangar [max_link_capacity=1000]
+connection: hangar-goal [max_link_capacity=1000]

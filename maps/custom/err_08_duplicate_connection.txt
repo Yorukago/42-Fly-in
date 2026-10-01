@@ -1,0 +1,10 @@
+# Parser error: a-b and b-a are the same link, declared twice.
+nb_drones: 1
+
+start_hub: start 0 0
+hub: relay 1 0
+end_hub: goal 2 0
+
+connection: start-relay
+connection: relay-start
+connection: relay-goal

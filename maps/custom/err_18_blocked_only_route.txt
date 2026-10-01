@@ -1,0 +1,10 @@
+# Also not a syntax error: the only route to the goal runs through a blocked
+# zone, which is never traversable, so the map is unsolvable.
+nb_drones: 1
+
+start_hub: start 0 0
+hub: wall 1 0 [zone=blocked]
+end_hub: goal 2 0
+
+connection: start-wall
+connection: wall-goal

@@ -1,0 +1,10 @@
+# Movement cost: entering a restricted zone takes two turns, not one. The drone
+# prints the connection name while in flight, then the zone when it lands.
+nb_drones: 1
+
+start_hub: start 0 0 [color=green]
+hub: storm 1 0 [zone=restricted]
+end_hub: goal 2 0 [color=red]
+
+connection: start-storm
+connection: storm-goal

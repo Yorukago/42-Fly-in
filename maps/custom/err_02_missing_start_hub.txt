@@ -1,0 +1,7 @@
+# Parser error: no start_hub, so the fleet has nowhere to launch from.
+nb_drones: 1
+
+hub: relay 0 0
+end_hub: goal 1 0
+
+connection: relay-goal

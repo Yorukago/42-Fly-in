@@ -1,0 +1,14 @@
+# Parser defaults: no metadata anywhere, so every zone is normal with
+# max_drones=1 and every connection has max_link_capacity=1. The second drone
+# has to wait a turn behind the first.
+#
+# Comment lines and blank lines are ignored.
+
+nb_drones: 2
+
+start_hub: start 0 0
+hub: relay 1 0
+end_hub: goal 2 0
+
+connection: start-relay
+connection: relay-goal
