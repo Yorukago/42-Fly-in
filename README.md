@@ -44,6 +44,8 @@ make install          # uv sync
 make run              # opens the map list
 ```
 
+`make` on its own lists every target with a one-line description.
+
 `make run` opens a list of every map under `maps/`, grouped by difficulty. Arrow keys browse, `enter` opens the highlighted map, `esc` quits. From the viewer, `m` goes back to the list, so you can walk through several maps without relaunching.
 
 To skip the list and open one map directly, name any part of it:
@@ -81,7 +83,7 @@ movement cost, zone type, parser defaults). See
 [`maps/custom/README.md`](maps/custom/README.md) for what each checks and the
 exact message or schedule it produces.
 
-`make lint` runs `flake8` and `mypy`; `make lint-strict` runs `mypy --strict`.
+`make lint` runs `flake8` and `mypy`; `make lint-strict` runs `mypy --strict`. `make bench` replays every graded map and checks its turn count against the subject's target (the table under **Performance** is this target's output), `make errors` prints the message each malformed map in `maps/custom/` produces, and `make check` runs all three.
 
 ### The map list
 
@@ -114,7 +116,7 @@ The map list and the viewer share **one** window for the whole session, created 
 ## Algorithm explanation
 
 Each drone's route is found with **Dijkstra's algorithm** over a state space of `(zone, turn)` pairs rather than just zones, since the cost of entering a zone depends on its type, and a move can be blocked by capacity at a *specific* turn, the turn number has to be part of the search state.
-This is implemented in `DronePlanner.plan()` (`planner.py`) with a binary heap (`heapq`) keyed on turn, so the search always expands the earliest-arriving state first - the first time it pops the destination zone, that's the fastest valid arrival.
+This is implemented in `DronePlanner.plan()` (`planner.py`) with a binary heap (`heapq`) keyed on `(turn, hops, -priority, counter)`, so the search always expands the earliest-arriving state first - the first time it pops the destination zone, that's the fastest valid arrival. The trailing `counter` is a monotonic tie-break from `itertools.count()`: without it `heapq` would fall through to comparing zone names, making the expansion order depend on alphabetical accident.
 
 Successor generation (`_successors`) accounts for:
 
@@ -122,7 +124,7 @@ Successor generation (`_successors`) accounts for:
 - **restricted zones**: cost 2 turns, modeled as a `TRANSIT` state mid-connection followed by an `ARRIVE` state, so a drone is genuinely "in flight" (and occupying the connection) for both turns.
 - **blocked zones**: excluded from the graph entirely (`Graph.__init__` never adds an edge into one).
 - **waiting**: a drone may stay in its current zone for a turn if that zone still has room, letting it wait out a capacity conflict instead of failing to path.
-- a **priority-zone tie-break**: among equal-turn-cost options, the search lexicographically prefers paths that pass through more `priority` zones (tracked as a bonus count alongside the arrival turn).
+- a **lexicographic tie-break**: among routes that arrive on the same turn, the search prefers the one with the fewest moves, and only then the one passing through the most `priority` zones. Waiting costs a turn but no move, so a drone with time to spare stays put rather than wandering, while still taking a priority zone when it is free.
 
 **Hub capacity**: every other zone holds its `max_drones` (default 1), but the two hubs hold `nb_drones` - the whole fleet starts in one and is delivered to the other, so the fleet size *is* their capacity (`ReservationTable.__init__`). Sequential planning keeps that from ever binding: when drone *k* is planned only *k-1* routes are committed, so a hub can always take one more.
 
@@ -131,6 +133,14 @@ Successor generation (`_successors`) accounts for:
 **Search horizon**: `DronePlanner` needs a turn limit, because waiting is always allowed and the `(zone, turn)` state space would otherwise be infinite. `Simulation._plan_all` sets it to the turn the last planned drone lands on, plus one walk across the whole map (`2 * zones + 1`). That bound is provably enough rather than a guess: once the earlier drones have landed, nothing is reserved any more, so a drone can always wait them out and then walk a free path - no reachable route is ever cut off for being too late.
 
 **Unsolvable maps**: the only way a map can fail is for no path to exist at all, since capacity can delay a drone but never strand it. `Graph.reachable()` - a plain breadth-first search over the same adjacency list - checks that once, up front, so a disconnected map or one whose only route runs through a `blocked` zone is reported immediately and by name instead of being discovered by an exhausted search.
+
+### Mistakes found along the way
+
+**Priority farming.** The tie-break used to be `(turn, -priority)` alone, with the bonus counted on *every* entry into a priority zone rather than per distinct zone. On capacity-bound maps the arrival turn is set by the queue, not the distance, so a detour that still lands on the same turn is free - and a drone with spare turns could bounce between two priority zones to run its score up. `D12` on `maps/hard/02_capacity_hell.txt` ping-ponged `convergence <-> priority_bypass2 <-> priority_bypass1` for five turns. Adding `hops` as the second key fixed it at no cost: identical turn counts on all ten benchmark maps, with total extra moves across the fleet going 51 -> 0 and revisited zones 23 -> 0. The one visible trade-off is that `capacity_hell` now scores 0 priority visits instead of 27, which is correct - on that map the priority bypasses genuinely are longer, so a drone minimising moves rightly declines them.
+
+**A guessed search horizon.** The turn limit started as "plan, and if that fails double the limit and retry", which is a guess dressed up as a loop. It is now the last arrival plus `2 * zones + 1`, which is provably sufficient (see **Search horizon** above), and the one genuine failure mode - no path at all - is caught up front by `Graph.reachable()` instead of by an exhausted search.
+
+**A sentinel capacity.** The hubs were given `UNCAPACITATED = 10 ** 9`, a magic number standing in for "infinite". Their real capacity is `nb_drones`, which is both true and self-explaining, so the sentinel is gone.
 
 ## Performance
 
@@ -188,8 +198,9 @@ D1-waypoint1
 D1-waypoint2 D2-waypoint1
 D1-goal D2-waypoint2
 D2-goal
+Total turns: 4
 ```
 
-Each line is one turn; each `D<id>-<zone>` token means that drone arrived at that zone this turn. A drone still in flight toward a `restricted` zone prints `D<id>-<connection>` instead (the connection's declared `zoneA-zoneB` name) on its transit turn, then the zone name on the turn it lands - so the two-turn traversal is distinguishable in the output. This linear map has no restricted zones, so every token here is a zone; see `maps/medium/03_priority_puzzle.txt` for an example that exercises it. Here, `D1` and `D2` both start at `start` (turn 0, not printed) and take turns crossing the single-capacity connections one at a time - D2 has to wait a turn at `start` before it can follow D1 onto`waypoint1`, since every connection here defaults to `max_link_capacity: 1`.
+Each line is one turn; each `D<id>-<zone>` token means that drone arrived at that zone this turn. A drone still in flight toward a `restricted` zone prints `D<id>-<connection>` instead (the connection's declared `zoneA-zoneB` name) on its transit turn, then the zone name on the turn it lands - so the two-turn traversal is distinguishable in the output. This linear map has no restricted zones, so every token here is a zone; see `maps/medium/03_priority_puzzle.txt` for an example that exercises it. Here, `D1` and `D2` both start at `start` (turn 0, not printed) and take turns crossing the single-capacity connections one at a time - D2 has to wait a turn at `start` before it can follow D1 onto`waypoint1`, since every connection here defaults to `max_link_capacity: 1`. The closing `Total turns:` line is the figure the subject's performance targets are measured against, and matches the `turn n/N` counter in the viewer's HUD.
 
 **AI usage**: AI was used in an exploratory, conceptual capacity during development - mainly to talk through how to model the pathfinding search (e.g. why the state needs to include the turn number, not just the zone) and to sanity-check design decisions, rather than to generate the core implementation. It was also used to..end flake8's misery and mypy errors that I and too annoyed to correct them every time i sneezed or smth

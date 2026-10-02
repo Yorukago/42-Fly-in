@@ -142,7 +142,7 @@ class MapParser:
         for number, raw_line in enumerate(lines, start=1):
             line = raw_line.strip()
             if not line or line.startswith("#"):
-                continue  # skip blank lines and comments
+                continue
 
             keyword, separator, content = line.partition(":")
             if not separator or keyword not in self.KEYWORDS:

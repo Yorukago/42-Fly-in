@@ -15,6 +15,7 @@ def print_plan(simulation: Simulation, capacity_info: bool = False) -> None:
         #     print(f"  Zone {name}: {used}/{capacity} drones")
         # for name, (used, capacity) in turn.connections.items():
         #     print(f"  Connection {name}: {used}/{capacity} capacity used")
+    print(f"Total turns: {simulation.total_turns}")
 
 
 def run_simulation(
