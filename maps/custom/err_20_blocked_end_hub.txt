@@ -1,0 +1,10 @@
+# The end hub is declared blocked, so no drone could ever land in it. Caught
+# while parsing, by line, rather than by the simulation silently ignoring it.
+nb_drones: 2
+
+start_hub: start 0 0
+hub: relay 1 0
+end_hub: goal 2 0 [zone=blocked]
+
+connection: start-relay
+connection: relay-goal

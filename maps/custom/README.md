@@ -42,12 +42,18 @@ caught by the parser, with the line number that caused them.
 | `err_14_bad_coordinates` | `Line 5: invalid zone 'relay east 0' (x must be an integer, got 'east')` |
 | `err_15_malformed_metadata` | `Line 5: invalid metadata token 'color'` |
 | `err_16_nb_drones_not_positive` | `Line 2: nb_drones must be a positive integer, got '0'` |
-| `err_17_disconnected_graph` | `D1 could not reach 'goal' within 5000 turns; the map may be unsolvable.` |
-| `err_18_blocked_only_route` | `D1 could not reach 'goal' within 5000 turns; the map may be unsolvable.` |
+| `err_17_disconnected_graph` | `error: no route from 'start' to 'goal': the map is disconnected, or every route into it is blocked` |
+| `err_18_blocked_only_route` | `error: no route from 'start' to 'goal': the map is disconnected, or every route into it is blocked` |
+| `err_19_blocked_start_hub` | `error: Line 5: the start hub cannot be blocked (no drone could ever leave it or land in it)` |
+| `err_20_blocked_end_hub` | `error: Line 7: the end hub cannot be blocked (no drone could ever leave it or land in it)` |
 
-The last two parse cleanly - they are rejected by the simulation, not the
-parser, because no route exists. Both answer in well under a second: the
-search horizon doubles up to its cap instead of running forever.
+`err_17` and `err_18` parse cleanly - they are rejected by `Simulation`, not
+the parser, because no route exists. `Graph.reachable()` settles that with a
+single breadth-first search before any planning starts, so both answer
+instantly rather than by exhausting a search.
+
+`err_19` and `err_20` are caught earlier still, by `MapData.add_zone`: a hub
+declared `blocked` contradicts the file itself, so it never reaches the graph.
 
 ## Valid files (`ok_*`)
 

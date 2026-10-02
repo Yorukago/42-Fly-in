@@ -132,7 +132,7 @@ Successor generation (`_successors`) accounts for:
 
 **Search horizon**: `DronePlanner` needs a turn limit, because waiting is always allowed and the `(zone, turn)` state space would otherwise be infinite. `Simulation._plan_all` sets it to the turn the last planned drone lands on, plus one walk across the whole map (`2 * zones + 1`). That bound is provably enough rather than a guess: once the earlier drones have landed, nothing is reserved any more, so a drone can always wait them out and then walk a free path - no reachable route is ever cut off for being too late.
 
-**Unsolvable maps**: the only way a map can fail is for no path to exist at all, since capacity can delay a drone but never strand it. `Graph.reachable()` - a plain breadth-first search over the same adjacency list - checks that once, up front, so a disconnected map or one whose only route runs through a `blocked` zone is reported immediately and by name instead of being discovered by an exhausted search.
+**Unsolvable maps**: a `blocked` hub is rejected while parsing (`MapData.add_zone`) - no drone could leave a blocked start or land in a blocked end, and that is a contradiction in the file rather than a property of the graph. Past that, the only way a map can fail is for no path to exist at all, since capacity can delay a drone but never strand it. `Graph.reachable()` - a plain breadth-first search over the same adjacency list - checks that once, up front, so a disconnected map or one whose only route runs through a `blocked` zone is reported immediately and by name instead of being discovered by an exhausted search.
 
 ### Mistakes found along the way
 

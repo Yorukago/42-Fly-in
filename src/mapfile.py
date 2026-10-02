@@ -82,8 +82,15 @@ class MapData:
         """Register a zone.
 
         Raises:
-            ValueError: If the name is taken, or a second start/end hub.
+            ValueError: If the hub is blocked, the name is taken, or a
+                second start/end hub is declared.
         """
+        if zone.is_hub and zone.zone_type is ZoneType.BLOCKED:
+            hub = "start" if zone.is_start else "end"
+            raise ValueError(
+                f"Line {line_number}: the {hub} hub cannot be blocked "
+                f"(no drone could ever leave it or land in it)"
+            )
         if zone.is_start and self.start_zone is not None:
             raise ValueError(f"Line {line_number}: duplicate start_hub definition")
         if zone.is_end and self.end_zone is not None:
@@ -150,7 +157,12 @@ class MapParser:
             content = content.strip()
 
             if keyword == "nb_drones":
-                data.nb_drones = self._drone_count(content, number)
+                if not is_positive_int(content):
+                    raise ValueError(
+                        f"Line {number}: nb_drones must be a positive integer, "
+                        f"got {content!r}"
+                    )
+                data.nb_drones = int(content)
             elif keyword == "connection":
                 data.add_connection(self._connection(content, number, data.zones), number)
             else:
@@ -167,113 +179,99 @@ class MapParser:
 
         return data
 
-    def _drone_count(self, content: str, number: int) -> int:
-        """Parse the `nb_drones:` value, which must be a positive integer."""
-        if not is_positive_int(content):
-            raise ValueError(
-                f"Line {number}: nb_drones must be a positive integer, got {content!r}"
-            )
-        return int(content)
-
     def _zone(self, line: str, number: int, is_start: bool, is_end: bool) -> Zone:
-        """Parse one `hub:`/`start_hub:`/`end_hub:` line into a `Zone`."""
-        line, metadata = self._split_metadata(line, number)
-        parts = line.split()
+        """Parse one `hub:`/`start_hub:`/`end_hub:` line into a `Zone`.
+
+        Raises:
+            ValueError: If the line is malformed or a field is out of range.
+        """
+        content, metadata = self._metadata(line, number)
+        parts = content.split()
         if len(parts) < 3:
             raise ValueError(
-                f"Line {number}: zone line needs at least name, x, y - got {line!r}"
+                f"Line {number}: zone line needs at least name, x, y - got {content!r}"
             )
 
         name, x_text, y_text = parts[0], parts[1], parts[2]
-        detail = self._zone_problem(name, x_text, y_text, metadata)
-        if detail is not None:
-            raise ValueError(f"Line {number}: invalid zone {line!r} ({detail})")
+        zone_type = metadata.get("zone", "normal")
+        capacity = metadata.get("max_drones", "1")
+        invalid = f"Line {number}: invalid zone {content!r}"
+
+        if "-" in name:
+            raise ValueError(f"{invalid} (zone names cannot contain a dash)")
+        for label, text in (("x", x_text), ("y", y_text)):
+            if not re.fullmatch(r"[+-]?\d+", text):
+                raise ValueError(f"{invalid} ({label} must be an integer, got {text!r})")
+        if zone_type not in {kind.value for kind in ZoneType}:
+            raise ValueError(f"{invalid} (unknown zone type {zone_type!r})")
+        if not is_positive_int(capacity):
+            raise ValueError(
+                f"{invalid} (max_drones must be a positive integer, got {capacity!r})"
+            )
 
         return Zone(
             name=name,
             x=int(x_text),
             y=int(y_text),
-            zone_type=ZoneType(metadata.get("zone", "normal")),
+            zone_type=ZoneType(zone_type),
             color=metadata.get("color", "none"),
-            max_drones=int(metadata.get("max_drones", "1")),
+            max_drones=int(capacity),
             is_start=is_start,
             is_end=is_end,
         )
 
-    def _zone_problem(
-        self, name: str, x_text: str, y_text: str, metadata: dict[str, str]
-    ) -> str | None:
-        """Return why a zone's fields are invalid, or None if they are fine."""
-        if "-" in name:
-            return "zone names cannot contain a dash"
-        for label, text in (("x", x_text), ("y", y_text)):
-            if not re.fullmatch(r"[+-]?\d+", text):
-                return f"{label} must be an integer, got {text!r}"
-        if metadata.get("zone", "normal") not in {t.value for t in ZoneType}:
-            return f"unknown zone type {metadata['zone']!r}"
-        capacity = metadata.get("max_drones", "1")
-        if not is_positive_int(capacity):
-            return f"max_drones must be a positive integer, got {capacity!r}"
-        return None
-
     def _connection(
         self, line: str, number: int, known_zones: dict[str, Zone]
     ) -> Connection:
-        """Parse one `connection:` line into a `Connection`."""
-        line, metadata = self._split_metadata(line, number)
-        parts = line.split()
-        if len(parts) != 1:
+        """Parse one `connection:` line into a `Connection`.
+
+        Raises:
+            ValueError: If the pair is malformed, unknown, or links a zone to itself.
+        """
+        content, metadata = self._metadata(line, number)
+        parts = content.split()
+        if len(parts) != 1 or parts[0].count("-") != 1:
             raise ValueError(
-                f"Line {number}: expected exactly one 'zoneA-zoneB' token, got {line!r}"
+                f"Line {number}: connection must be one 'zoneA-zoneB' token "
+                f"(exactly one dash), got {content!r}"
             )
 
         pair = parts[0]
-        if pair.count("-") != 1:
-            raise ValueError(
-                f"Line {number}: connection must be 'zoneA-zoneB' (exactly one dash), "
-                f"got {pair!r}"
-            )
-
         zone_a, zone_b = pair.split("-")
+        capacity = metadata.get("max_link_capacity", "1")
+        invalid = f"Line {number}: invalid connection {pair!r}"
+
         for name in (zone_a, zone_b):
             if name not in known_zones:
                 raise ValueError(f"Line {number}: unknown zone {name!r} in connection")
         if zone_a == zone_b:
-            raise ValueError(
-                f"Line {number}: invalid connection {pair!r} "
-                f"(a connection cannot link a zone to itself)"
-            )
-
-        capacity = metadata.get("max_link_capacity", "1")
+            raise ValueError(f"{invalid} (a connection cannot link a zone to itself)")
         if not is_positive_int(capacity):
             raise ValueError(
-                f"Line {number}: invalid connection {pair!r} "
-                f"(max_link_capacity must be a positive integer, got {capacity!r})"
+                f"{invalid} (max_link_capacity must be a positive integer, "
+                f"got {capacity!r})"
             )
 
         return Connection(zone_a=zone_a, zone_b=zone_b, max_link_capacity=int(capacity))
 
-    def _split_metadata(self, line: str, number: int) -> tuple[str, dict[str, str]]:
-        """Split a line into its content and its optional trailing [...] block."""
+    def _metadata(self, line: str, number: int) -> tuple[str, dict[str, str]]:
+        """Split a line into its content and its optional trailing `[k=v ...]` block.
+
+        Raises:
+            ValueError: If a token inside the brackets is not `key=value`.
+        """
         bracket = re.search(r"\[.*?\]", line)
         if not bracket:
             return line, {}
-        return line[: bracket.start()].strip(), self._metadata(bracket.group(), number)
 
-    def _metadata(self, raw: str, number: int) -> dict[str, str]:
-        """Parse a `[key=value key=value]` block into its pairs.
-
-        `raw` always arrives bracketed, because the caller found it with a
-        bracket-matching regex, so only the tokens inside still need checking.
-        """
-        result: dict[str, str] = {}
-        for token in raw[1:-1].split():
+        metadata: dict[str, str] = {}
+        for token in bracket.group()[1:-1].split():
             key, _, value = token.partition("=")
             if not key or not value:
                 raise ValueError(f"Line {number}: invalid metadata token {token!r}")
-            result[key] = value
+            metadata[key] = value
 
-        return result
+        return line[: bracket.start()].strip(), metadata
 
 
 def parse_map(filepath: str) -> MapData:
